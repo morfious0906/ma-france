@@ -10,6 +10,7 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
+  CircleHelp,
   Compass,
   Flame,
   Globe2,
@@ -226,6 +227,7 @@ export default function Home() {
   const [view, setView] = useState<View>("home");
   const [dark, setDark] = useState(() => localStorage.getItem("ma-france-theme") === "dark");
   const [showPlacement, setShowPlacement] = useState(false);
+  const [showLoginHelp, setShowLoginHelp] = useState(false);
   const [placementIndex, setPlacementIndex] = useState(0);
   const [placementScore, setPlacementScore] = useState(0);
   const [placementResult, setPlacementResult] = useState<string | null>(null);
@@ -415,7 +417,7 @@ export default function Home() {
           <button className="language-button" onClick={() => setLang((current) => (current === "fr" ? "ar" : "fr"))}>
             <Globe2 size={15} /> {t.language}
           </button>
-          {authLoading ? <span className="auth-loading"><LoaderCircle size={15} /></span> : isAuthenticated ? <><button className="user-action desktop-only" onClick={() => goToDashboard()}><span>{user?.name?.slice(0, 1).toUpperCase() || "M"}</span>{user?.name || t.dashboard}</button><button className="icon-button" onClick={() => logout()} aria-label={isAr ? "تسجيل الخروج" : "Se déconnecter"}><LogOut size={16} /></button></> : <button className="outline-action desktop-only" onClick={() => startLogin()}><LogIn size={15} /> {isAr ? "تسجيل الدخول" : "Se connecter"}</button>}
+          {authLoading ? <span className="auth-loading"><LoaderCircle size={15} /></span> : isAuthenticated ? <><button className="user-action desktop-only" onClick={() => goToDashboard()}><span>{user?.name?.slice(0, 1).toUpperCase() || "M"}</span>{user?.name || t.dashboard}</button><button className="icon-button" onClick={() => logout()} aria-label={isAr ? "تسجيل الخروج" : "Se déconnecter"}><LogOut size={16} /></button></> : <><button className="outline-action desktop-only" onClick={() => startLogin()}><LogIn size={15} /> {isAr ? "تسجيل الدخول" : "Se connecter"}</button><button className="login-help-link" onClick={() => setShowLoginHelp(true)} aria-label={isAr ? "مساعدة تسجيل الدخول" : "Aide à la connexion"}><CircleHelp size={15} /></button></>}
         </div>
       </header>
 
@@ -432,6 +434,7 @@ export default function Home() {
                   {t.start} <ArrowRight className={isAr ? "flip" : ""} size={18} />
                 </button>
                 <button className="text-action" onClick={() => setShowPlacement(true)}>{t.placement} <ChevronRight className={isAr ? "flip" : ""} size={17} /></button>
+                {!isAuthenticated && <button className="login-guidance" onClick={() => setShowLoginHelp(true)}><CircleHelp size={15} />{isAr ? "مشكلة في تسجيل الدخول؟ تابع كزائر" : "Connexion difficile ? Continuez en visiteur"}</button>}
               </div>
               <p className="hero-note"><PenLine size={16} /> {t.note}</p>
             </div>
@@ -574,6 +577,26 @@ export default function Home() {
                 <button className="primary-action" onClick={() => { closePlacement(); goToDashboard(); }}>{t.begin} <ArrowRight className={isAr ? "flip" : ""} size={18} /></button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {showLoginHelp && (
+        <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="login-help-title">
+          <div className="placement-modal login-help-modal">
+            <button className="modal-close" onClick={() => setShowLoginHelp(false)} aria-label={isAr ? "إغلاق" : "Fermer"}><X size={20} /></button>
+            <p className="eyebrow"><span className="route-dot red" /> {isAr ? "مساعدة الدخول" : "Aide à la connexion"}</p>
+            <h2 id="login-help-title">{isAr ? "لنحفظ تقدّمك بأمان." : "Gardons vos progrès en sécurité."}</h2>
+            <p>{isAr ? "تسجيل الدخول يحفظ دروسك وكتابتك ومستواك في حسابك. إذا واجهت خطأً خارج الموقع، أكمل كزائر ثم أعد المحاولة لاحقًا." : "La connexion enregistre vos leçons, vos textes et votre niveau. En cas d’erreur hors du site, continuez en visiteur puis réessayez plus tard."}</p>
+            <ol className="login-help-steps">
+              <li>{isAr ? "اختر «إعادة محاولة الدخول»." : "Choisissez « Réessayer la connexion »."}</li>
+              <li>{isAr ? "أكمل الدخول من نافذة الحساب التي ستفتح." : "Terminez la connexion dans la fenêtre de compte qui s’ouvre."}</li>
+              <li>{isAr ? "إن ظهر خطأ 403، أغلق النافذة واستخدم وضع التجربة مؤقتًا." : "Si une erreur 403 apparaît, fermez la fenêtre et utilisez le mode découverte temporairement."}</li>
+            </ol>
+            <div className="login-help-actions">
+              <button className="primary-action" onClick={() => startLogin()}><LogIn size={17} />{isAr ? "إعادة محاولة الدخول" : "Réessayer la connexion"}</button>
+              <button className="text-action" onClick={() => setShowLoginHelp(false)}>{isAr ? "المتابعة كزائر" : "Continuer en visiteur"}</button>
+            </div>
           </div>
         </div>
       )}
