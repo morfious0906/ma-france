@@ -8,11 +8,15 @@ import {
   BadgeCheck,
   BookOpen,
   Check,
+  CheckCircle2,
   ChevronRight,
   Compass,
   Flame,
   Globe2,
   Library,
+  LogIn,
+  LogOut,
+  LoaderCircle,
   MessageCircle,
   Moon,
   PenLine,
@@ -21,7 +25,13 @@ import {
   Sun,
   Volume2,
   X,
+  XCircle,
 } from "lucide-react";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { startLogin } from "@/const";
+import { trpc } from "@/lib/trpc";
+import { curriculumLessons, levelLabels, vocabularyCategoryLabels, vocabularyItems } from "@/data/curriculum";
+import { calculatePlacementLevel, calculateProgress, CEFR_LEVELS, type CefrLevel } from "@shared/learning";
 import { useEffect, useMemo, useState } from "react";
 
 type Language = "fr" | "ar";
@@ -35,44 +45,7 @@ const ASSETS = {
   words: "/manus-storage/ma-france-vocabulary-objects_930f5388.jpg",
 };
 
-const lessons = [
-  {
-    id: "salutations",
-    stamp: "01",
-    level: "A1",
-    titleFr: "Dire bonjour, naturellement",
-    titleAr: "التحية بثقة وطبيعية",
-    eyebrowFr: "Première page",
-    eyebrowAr: "الصفحة الأولى",
-    duration: "12 min",
-    phrase: "Bonjour, je m'appelle Lina. Enchantée.",
-    translation: "مرحباً، اسمي لينا. تشرفت بلقائك.",
-  },
-  {
-    id: "cafe",
-    stamp: "02",
-    level: "A1",
-    titleFr: "Commander au café",
-    titleAr: "الطلب في المقهى",
-    eyebrowFr: "Parler dehors",
-    eyebrowAr: "تحدث خارج الصف",
-    duration: "16 min",
-    phrase: "Je voudrais un café, s'il vous plaît.",
-    translation: "أود قهوة من فضلك.",
-  },
-  {
-    id: "etre",
-    stamp: "03",
-    level: "A1",
-    titleFr: "Être, la phrase essentielle",
-    titleAr: "Être، أساس الجملة",
-    eyebrowFr: "Grammaire utile",
-    eyebrowAr: "قواعد مفيدة",
-    duration: "14 min",
-    phrase: "Nous sommes prêts à apprendre.",
-    translation: "نحن مستعدون للتعلم.",
-  },
-];
+const lessons = curriculumLessons;
 
 const copy = {
   fr: {
@@ -238,6 +211,17 @@ function scrollTo(id: string) {
 }
 
 export default function Home() {
+  const { user, loading: authLoading, isAuthenticated, logout } = useAuth();
+  const utils = trpc.useUtils();
+  const learningSnapshot = trpc.learning.snapshot.useQuery(undefined, {
+    enabled: isAuthenticated,
+    refetchOnWindowFocus: false,
+  });
+  const savePlacementMutation = trpc.learning.savePlacement.useMutation();
+  const completeLessonMutation = trpc.learning.completeLesson.useMutation();
+  const recordAnswerMutation = trpc.learning.recordAnswer.useMutation();
+  const saveWritingMutation = trpc.learning.saveWriting.useMutation();
+
   const [lang, setLang] = useState<Language>(() => (localStorage.getItem("ma-france-lang") as Language) || "fr");
   const [view, setView] = useState<View>("home");
   const [dark, setDark] = useState(() => localStorage.getItem("ma-france-theme") === "dark");
@@ -245,7 +229,10 @@ export default function Home() {
   const [placementIndex, setPlacementIndex] = useState(0);
   const [placementScore, setPlacementScore] = useState(0);
   const [placementResult, setPlacementResult] = useState<string | null>(null);
+  const [placementChoice, setPlacementChoice] = useState("");
+  const [placementFeedback, setPlacementFeedback] = useState<"correct" | "incorrect" | null>(null);
   const [activeLesson, setActiveLesson] = useState(lessons[0]);
+  const [selectedLevel, setSelectedLevel] = useState<CefrLevel>("A1");
   const [completed, setCompleted] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("ma-france-completed") || "[]") as string[];
@@ -259,10 +246,13 @@ export default function Home() {
   const [showTranslations, setShowTranslations] = useState(false);
   const [writing, setWriting] = useState("");
   const [lineSaved, setLineSaved] = useState(false);
+  const [syncState, setSyncState] = useState<"idle" | "saving" | "error">("idle");
 
   const t = copy[lang];
   const isAr = lang === "ar";
-  const progress = useMemo(() => Math.round((completed.length / lessons.length) * 100), [completed]);
+  const syncErrorMessage = isAr ? "تعذّرت المزامنة؛ أعيدت بياناتك إلى آخر حالة محفوظة." : "La synchronisation a échoué ; vos données reviennent à la dernière version enregistrée.";
+  const progress = useMemo(() => calculateProgress(completed.length, lessons.length), [completed]);
+  const levelLessons = useMemo(() => lessons.filter(lesson => lesson.level === selectedLevel), [selectedLevel]);
 
   useEffect(() => {
     document.documentElement.dir = isAr ? "rtl" : "ltr";
@@ -275,9 +265,19 @@ export default function Home() {
   }, [dark]);
 
   useEffect(() => {
-    localStorage.setItem("ma-france-completed", JSON.stringify(completed));
-    localStorage.setItem("ma-france-xp", String(xp));
-  }, [completed, xp]);
+    if (isAuthenticated && learningSnapshot.data?.profile) {
+      setXp(learningSnapshot.data.profile.xp);
+      setSelectedLevel(learningSnapshot.data.profile.selectedLevel as CefrLevel);
+      setCompleted(learningSnapshot.data.progress.filter(item => item.status === "completed").map(item => item.lessonId));
+    }
+  }, [isAuthenticated, learningSnapshot.data]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      localStorage.setItem("ma-france-completed", JSON.stringify(completed));
+      localStorage.setItem("ma-france-xp", String(xp));
+    }
+  }, [completed, isAuthenticated, xp]);
 
   const goToDashboard = (lesson = activeLesson) => {
     setActiveLesson(lesson);
@@ -286,27 +286,102 @@ export default function Home() {
   };
 
   const completeActiveLesson = () => {
+    if (!isAuthenticated) {
+      startLogin();
+      return;
+    }
     if (!completed.includes(activeLesson.id)) {
+      const previousCompleted = completed;
+      const previousXp = xp;
       setCompleted((current) => [...current, activeLesson.id]);
       setXp((current) => current + 120);
+      setSyncState("saving");
+      completeLessonMutation.mutate({
+        lessonId: activeLesson.id,
+        score: exerciseFeedback === "correct" ? 100 : 0,
+        correctAnswers: exerciseFeedback === "correct" ? 1 : 0,
+        attempts: 1,
+      }, {
+        onSuccess: () => {
+          setSyncState("idle");
+          utils.learning.snapshot.invalidate();
+        },
+        onError: () => {
+          setCompleted(previousCompleted);
+          setXp(previousXp);
+          setSyncState("error");
+        },
+      });
+    }
+  };
+
+  const validateExercise = () => {
+    const isCorrect = chosenExercise === activeLesson.answer;
+    setExerciseFeedback(isCorrect ? "correct" : "incorrect");
+    if (isAuthenticated && chosenExercise) {
+      recordAnswerMutation.mutate({
+        lessonId: activeLesson.id,
+        questionId: activeLesson.questionId,
+        userAnswer: chosenExercise,
+        isCorrect,
+      }, {
+        // The answer has already received immediate visual feedback. If audit logging
+        // fails, keep the lesson usable and let the next sync attempt recover naturally.
+        onError: () => undefined,
+      });
+    }
+  };
+
+  const changeLevel = (level: CefrLevel) => {
+    const previousLevel = selectedLevel;
+    const previousLesson = activeLesson;
+    setSelectedLevel(level);
+    const firstLesson = lessons.find(lesson => lesson.level === level);
+    if (firstLesson) setActiveLesson(firstLesson);
+    if (isAuthenticated) {
+      setSyncState("saving");
+      savePlacementMutation.mutate({ level }, {
+        onSuccess: () => {
+          setSyncState("idle");
+          utils.learning.snapshot.invalidate();
+        },
+        onError: () => {
+          setSelectedLevel(previousLevel);
+          setActiveLesson(previousLesson);
+          setSyncState("error");
+        },
+      });
     }
   };
 
   const selectPlacementAnswer = (answer: string) => {
-    const nextScore = placementScore + (answer === placementQuestions[placementIndex].answer ? 1 : 0);
-    if (placementIndex === placementQuestions.length - 1) {
-      setPlacementScore(nextScore);
-      setPlacementResult(nextScore === 3 ? "A2" : "A1");
-      return;
-    }
-    setPlacementScore(nextScore);
-    setPlacementIndex((current) => current + 1);
+    if (placementFeedback) return;
+    const isCorrect = answer === placementQuestions[placementIndex].answer;
+    const nextScore = placementScore + (isCorrect ? 1 : 0);
+    setPlacementChoice(answer);
+    setPlacementFeedback(isCorrect ? "correct" : "incorrect");
+
+    window.setTimeout(() => {
+      if (placementIndex === placementQuestions.length - 1) {
+        setPlacementScore(nextScore);
+        const level = calculatePlacementLevel(nextScore, placementQuestions.length);
+        setPlacementResult(level);
+        changeLevel(level);
+      } else {
+        setPlacementScore(nextScore);
+        setPlacementIndex((current) => current + 1);
+        setPlacementChoice("");
+        setPlacementFeedback(null);
+      }
+    }, 720);
   };
 
   const resetPlacement = () => {
     setPlacementIndex(0);
     setPlacementScore(0);
     setPlacementResult(null);
+    setPlacementChoice("");
+    setPlacementFeedback(null);
   };
 
   const closePlacement = () => {
@@ -340,7 +415,7 @@ export default function Home() {
           <button className="language-button" onClick={() => setLang((current) => (current === "fr" ? "ar" : "fr"))}>
             <Globe2 size={15} /> {t.language}
           </button>
-          <button className="outline-action desktop-only" onClick={() => goToDashboard()}>{t.dashboard}</button>
+          {authLoading ? <span className="auth-loading"><LoaderCircle size={15} /></span> : isAuthenticated ? <><button className="user-action desktop-only" onClick={() => goToDashboard()}><span>{user?.name?.slice(0, 1).toUpperCase() || "M"}</span>{user?.name || t.dashboard}</button><button className="icon-button" onClick={() => logout()} aria-label={isAr ? "تسجيل الخروج" : "Se déconnecter"}><LogOut size={16} /></button></> : <button className="outline-action desktop-only" onClick={() => startLogin()}><LogIn size={15} /> {isAr ? "تسجيل الدخول" : "Se connecter"}</button>}
         </div>
       </header>
 
@@ -398,7 +473,7 @@ export default function Home() {
               <p className="margin-note" dir={isAr ? "ltr" : "rtl"}>{isAr ? "Écoutez, répétez, puis gardez la phrase." : "استمع، كرّر، ثم احتفظ بالعبارة."}</p>
             </div>
             <div className="lesson-stack">
-              {lessons.map((lesson, index) => (
+              {lessons.slice(0, 5).map((lesson, index) => (
                 <article className={`lesson-preview preview-${index + 1}`} key={lesson.id}>
                   <div className="preview-index"><span>{lesson.stamp}</span><i /></div>
                   <div className="preview-main">
@@ -451,6 +526,11 @@ export default function Home() {
           completed={completed}
           xp={xp}
           progress={progress}
+          selectedLevel={selectedLevel}
+          levelLessons={levelLessons}
+          isAuthenticated={isAuthenticated}
+          syncing={syncState === "saving" || learningSnapshot.isFetching || completeLessonMutation.isPending}
+          syncError={syncState === "error" ? syncErrorMessage : undefined}
           chosenExercise={chosenExercise}
           exerciseFeedback={exerciseFeedback}
           showTranslations={showTranslations}
@@ -458,12 +538,13 @@ export default function Home() {
           lineSaved={lineSaved}
           onHome={() => setView("home")}
           onLesson={setActiveLesson}
+          onLevel={changeLevel}
           onExerciseChoice={(choice) => { setChosenExercise(choice); setExerciseFeedback(null); }}
-          onValidate={() => setExerciseFeedback(chosenExercise === "sommes" ? "correct" : "incorrect")}
+          onValidate={validateExercise}
           onComplete={completeActiveLesson}
           onTranslation={() => setShowTranslations((current) => !current)}
           onWriting={setWriting}
-          onSaveLine={() => { setLineSaved(true); if (writing.trim()) setXp((current) => current + 20); }}
+          onSaveLine={() => { if (!isAuthenticated) { startLogin(); return; } if (writing.trim()) { setLineSaved(true); setSyncState("saving"); saveWritingMutation.mutate({ lessonId: activeLesson.id, level: activeLesson.level, entryText: writing.trim() }, { onSuccess: () => { setSyncState("idle"); utils.learning.snapshot.invalidate(); }, onError: () => { setLineSaved(false); setSyncState("error"); } }); } }}
         />
       )}
 
@@ -481,7 +562,8 @@ export default function Home() {
                 <div className="quiz-progress"><span style={{ width: `${((placementIndex + 1) / placementQuestions.length) * 100}%` }} /></div>
                 <small>{placementIndex + 1} / {placementQuestions.length}</small>
                 <h3>{placementQuestions[placementIndex].q}</h3>
-                <div className="answer-list">{placementQuestions[placementIndex].options.map((answer) => <button key={answer} onClick={() => selectPlacementAnswer(answer)}>{answer}<ChevronRight size={18} /></button>)}</div>
+                <div className={`answer-list ${placementFeedback ? `placement-${placementFeedback}` : ""}`}>{placementQuestions[placementIndex].options.map((answer) => <button key={answer} disabled={Boolean(placementFeedback)} className={placementChoice === answer ? `selected ${placementFeedback || ""}` : ""} onClick={() => selectPlacementAnswer(answer)}>{answer}<ChevronRight size={18} /></button>)}</div>
+                {placementFeedback && <p className={`placement-feedback ${placementFeedback}`}>{placementFeedback === "correct" ? <CheckCircle2 size={16} /> : <XCircle size={16} />}{placementFeedback === "correct" ? (isAr ? "إجابة صحيحة، أحسنت." : "Bonne réponse, bravo.") : (isAr ? `الإجابة الصحيحة: ${placementQuestions[placementIndex].answer}` : `Réponse attendue : ${placementQuestions[placementIndex].answer}`)}</p>}
               </>
             ) : (
               <div className="placement-result">
@@ -505,6 +587,11 @@ type DashboardProps = {
   completed: string[];
   xp: number;
   progress: number;
+  selectedLevel: CefrLevel;
+  levelLessons: (typeof lessons)[number][];
+  isAuthenticated: boolean;
+  syncing: boolean;
+  syncError?: string;
   chosenExercise: string;
   exerciseFeedback: "correct" | "incorrect" | null;
   showTranslations: boolean;
@@ -512,6 +599,7 @@ type DashboardProps = {
   lineSaved: boolean;
   onHome: () => void;
   onLesson: (lesson: (typeof lessons)[number]) => void;
+  onLevel: (level: CefrLevel) => void;
   onExerciseChoice: (choice: string) => void;
   onValidate: () => void;
   onComplete: () => void;
@@ -521,48 +609,47 @@ type DashboardProps = {
 };
 
 function Dashboard(props: DashboardProps) {
-  const { lang, activeLesson, completed, xp, progress, chosenExercise, exerciseFeedback, showTranslations, writing, lineSaved } = props;
+  const { lang, activeLesson, completed, xp, progress, selectedLevel, levelLessons, isAuthenticated, syncing, syncError, chosenExercise, exerciseFeedback, showTranslations, writing, lineSaved } = props;
   const t = copy[lang];
   const isAr = lang === "ar";
   const isComplete = completed.includes(activeLesson.id);
-  const deck = [
-    { fr: "Bonjour", ar: "مرحباً" },
-    { fr: "Merci", ar: "شكراً" },
-    { fr: "À bientôt", ar: "إلى اللقاء قريباً" },
-  ];
+  const [vocabCategory, setVocabCategory] = useState<"all" | keyof typeof vocabularyCategoryLabels>("all");
+  const deck = vocabularyItems.filter(item => vocabCategory === "all" || item.category === vocabCategory).slice(0, 5);
 
   return (
     <main className="dashboard-page">
       <section className="dashboard-intro">
         <button className="back-button" onClick={props.onHome}><ArrowLeft className={isAr ? "flip" : ""} size={17} /> {t.backHome}</button>
         <div className="dashboard-title-row">
-          <div><p className="eyebrow"><span className="route-dot red" /> {t.dashEyebrow}</p><h1>{t.dashTitle}</h1><p>{t.dashText}</p></div>
-          <div className="score-stack"><div><Sparkles size={17} /><strong>{xp}</strong><span>{t.xp}</span></div><div><Flame size={17} /><strong>4</strong><span>{t.streak}</span></div></div>
+          <div><p className="eyebrow"><span className="route-dot red" /> {t.dashEyebrow}</p><h1>{t.dashTitle}</h1><p>{t.dashText}</p>{!isAuthenticated && <button className="sync-prompt" onClick={() => startLogin()}><LogIn size={14} />{isAr ? "وضع التجربة: سجّل الدخول لحفظ تقدّمك عبر أجهزتك" : "Mode découverte : connectez-vous pour synchroniser vos progrès"}</button>}{syncError && <p className="sync-error" role="status">{syncError}</p>}</div>
+          <div className="score-stack"><div><Sparkles size={17} /><strong>{xp}</strong><span>{t.xp}</span></div><div><Flame size={17} /><strong>4</strong><span>{t.streak}</span></div>{syncing && <div className="syncing-score"><LoaderCircle size={16} />{isAr ? "مزامنة" : "Sync"}</div>}</div>
         </div>
       </section>
 
       <section className="dashboard-grid">
         <aside className="progress-rail">
-          <div className="rail-header"><span>{isAr ? "المسار" : "Parcours"}</span><strong>A1</strong></div>
+          <div className="rail-header"><span>{isAr ? "المسار" : "Parcours"}</span><strong>{selectedLevel}</strong></div>
           <div className="ring-wrap"><div className="progress-ring" style={{ "--progress": `${progress * 3.6}deg` } as React.CSSProperties}><div><strong>{progress}%</strong><small>{isAr ? "مكتمل" : "fait"}</small></div></div><p>{isAr ? "ثلاث صفحات صغيرة نحو بداية واثقة." : "Trois petites pages vers des débuts sûrs."}</p></div>
-          <div className="rail-lessons">{lessons.map((lesson) => <button key={lesson.id} className={lesson.id === activeLesson.id ? "selected" : ""} onClick={() => props.onLesson(lesson)}><span className="rail-stamp">{completed.includes(lesson.id) ? <Check size={14} /> : lesson.stamp}</span><span><small>{lesson.level}</small><strong>{isAr ? lesson.titleAr : lesson.titleFr}</strong></span></button>)}</div>
+          <div className="level-tabs" aria-label={isAr ? "اختيار المستوى" : "Choisir un niveau"}>{CEFR_LEVELS.map(level => <button key={level} className={selectedLevel === level ? "selected" : ""} onClick={() => props.onLevel(level)}>{level}</button>)}</div>
+          <div className="rail-level-title">{isAr ? levelLabels[selectedLevel].ar : levelLabels[selectedLevel].fr}</div>
+          <div className="rail-lessons">{levelLessons.map((lesson) => <button key={lesson.id} className={lesson.id === activeLesson.id ? "selected" : ""} onClick={() => props.onLesson(lesson)}><span className="rail-stamp">{completed.includes(lesson.id) ? <Check size={14} /> : lesson.stamp}</span><span><small>{lesson.level}</small><strong>{isAr ? lesson.titleAr : lesson.titleFr}</strong></span></button>)}</div>
         </aside>
 
         <section className="lesson-workspace">
           <div className="workspace-heading"><div><p className="eyebrow"><span className="route-dot" /> {t.activePage}</p><h2>{isAr ? activeLesson.titleAr : activeLesson.titleFr}</h2><p className="margin-note workspace-note" dir={isAr ? "ltr" : "rtl"}>{isAr ? "Concentrez-vous sur une phrase, pas sur la perfection." : "ركّز على عبارة واحدة، لا على الكمال."}</p></div><span className="time-chip"><Compass size={15} />{activeLesson.duration}</span></div>
           <div className="lesson-steps"><span className="is-active"><b>01</b>{t.warmup}</span><span><b>02</b>{t.grammar}</span><span><b>03</b>{t.practice}</span><span><b>04</b>{t.culture}</span></div>
           <div className="phrase-panel"><div><span className="phrase-label">ÉCOUTER · RÉPÉTER</span><h3>{activeLesson.phrase}</h3><p>{activeLesson.translation}</p></div><button className="listen-button" onClick={() => playFrench(activeLesson.phrase)}><Volume2 size={20} /><span>{t.listen}</span></button></div>
-          <div className="exercise-panel"><div className="exercise-number">02</div><div><p className="eyebrow">Structure utile</p><h3>{t.question}</h3><div className="choice-row">{["sommes", "êtes", "sont"].map((option) => <button key={option} className={chosenExercise === option ? "selected" : ""} onClick={() => props.onExerciseChoice(option)}>{option}</button>)}</div>{exerciseFeedback && <p className={`feedback ${exerciseFeedback}`}>{exerciseFeedback === "correct" ? <BadgeCheck size={17} /> : <Sparkles size={17} />}{exerciseFeedback === "correct" ? t.correct : t.incorrect}</p>}<button className="validate-button" disabled={!chosenExercise} onClick={props.onValidate}>{t.validate} <ChevronRight className={isAr ? "flip" : ""} size={16} /></button></div></div>
-          <div className="completion-row"><p>{isComplete ? t.completed : isAr ? "في نهاية الصفحة، احفظها كختم في رحلتك." : "À la fin de la page, ajoutez-lui votre cachet."}</p><button className={isComplete ? "complete-button done" : "complete-button"} onClick={props.onComplete} disabled={isComplete}>{isComplete ? <><Check size={17} /> {t.completed}</> : <><BadgeCheck size={17} /> {t.complete}</>}</button></div>
+          <div className={`exercise-panel ${exerciseFeedback ? `answer-${exerciseFeedback}` : ""}`}><div className="exercise-number">02</div><div><p className="eyebrow">Structure utile</p><h3>{isAr ? activeLesson.questionAr : activeLesson.questionFr}</h3><div className="choice-row">{activeLesson.options.map((option) => <button key={option} className={chosenExercise === option ? "selected" : ""} onClick={() => props.onExerciseChoice(option)}>{option}</button>)}</div>{exerciseFeedback && <p className={`feedback ${exerciseFeedback}`}>{exerciseFeedback === "correct" ? <CheckCircle2 size={17} /> : <XCircle size={17} />}{exerciseFeedback === "correct" ? (isAr ? `إجابة صحيحة — « ${activeLesson.answer} » هي الصيغة المناسبة.` : `Exact — « ${activeLesson.answer} » est la bonne réponse.`) : `${isAr ? "قريب. حاول مجدداً." : "Presque. Essayez encore."} ${isAr ? "الإجابة الصحيحة:" : "Réponse attendue :"} ${activeLesson.answer}`}</p>}<button className="validate-button" disabled={!chosenExercise} onClick={props.onValidate}>{t.validate} <ChevronRight className={isAr ? "flip" : ""} size={16} /></button></div></div>
+          <div className="completion-row"><p>{isComplete ? t.completed : isAr ? "بعد التأكد من الإجابة، احفظ الصفحة كختم في رحلتك." : "Après avoir vérifié votre réponse, ajoutez la page à votre carnet."}</p><button className={isComplete ? "complete-button done" : "complete-button"} onClick={props.onComplete} disabled={isComplete}>{isComplete ? <><Check size={17} /> {t.completed}</> : !isAuthenticated ? <><LogIn size={17} /> {isAr ? "سجّل للحفظ" : "Se connecter pour enregistrer"}</> : <><BadgeCheck size={17} /> {t.complete}</>}</button></div>
         </section>
 
         <aside className="practice-column">
           <article className="speaking-card"><img src={ASSETS.cafe} alt="" /><div className="card-overlay" /><div className="speaking-content"><span className="mini-stamp white">PARLER</span><h3>{t.speakingTitle}</h3><p>{t.speakingText}</p><button onClick={() => playFrench("Bonjour, je voudrais un café, s'il vous plaît.")}><Play size={15} fill="currentColor" /> {t.speakCta}</button></div></article>
-          <article className="word-card"><div className="word-card-heading"><div><p className="eyebrow"><span className="route-dot red" /> {t.wordsTitle}</p><p>{t.wordsText}</p></div><Library size={21} /></div><div className="word-list">{deck.map((word) => <button key={word.fr} onClick={props.onTranslation}><strong>{word.fr}</strong><span>{showTranslations ? word.ar : "••••••"}</span></button>)}</div><button className="reveal-button" onClick={props.onTranslation}>{showTranslations ? t.hide : t.reveal} <ChevronRight className={isAr ? "flip" : ""} size={15} /></button></article>
+          <article className="word-card"><div className="word-card-heading"><div><p className="eyebrow"><span className="route-dot red" /> {t.wordsTitle}</p><p>{t.wordsText}</p></div><Library size={21} /></div><div className="vocab-categories"><button className={vocabCategory === "all" ? "selected" : ""} onClick={() => setVocabCategory("all")}>{isAr ? "الكل" : "Tout"}</button>{Object.keys(vocabularyCategoryLabels).map(category => <button key={category} className={vocabCategory === category ? "selected" : ""} onClick={() => setVocabCategory(category as keyof typeof vocabularyCategoryLabels)}>{isAr ? vocabularyCategoryLabels[category as keyof typeof vocabularyCategoryLabels].ar : vocabularyCategoryLabels[category as keyof typeof vocabularyCategoryLabels].fr}</button>)}</div><div className="word-list">{deck.map((word) => <button key={word.id} onClick={props.onTranslation}><strong>{word.fr}<small>{word.level}</small></strong><span>{showTranslations ? word.ar : "••••••"}</span></button>)}</div><button className="reveal-button" onClick={props.onTranslation}>{showTranslations ? t.hide : t.reveal} <ChevronRight className={isAr ? "flip" : ""} size={15} /></button></article>
         </aside>
       </section>
 
-      <section className="writing-section"><div className="writing-illustration"><PenLine size={27} /><span>MF</span></div><div><p className="eyebrow"><span className="route-dot" /> {t.writingTitle}</p><h2>{t.writingText}</h2><textarea value={writing} onChange={(event) => { props.onWriting(event.target.value); }} placeholder={t.writingPlaceholder} aria-label={t.writingTitle} /><div className="writing-bottom"><span>{lineSaved ? <><Check size={15} /> {t.saved}</> : `${writing.trim().split(/\s+/).filter(Boolean).length} mots`}</span><button disabled={!writing.trim()} onClick={props.onSaveLine}>{t.saveLine} <ArrowRight className={isAr ? "flip" : ""} size={16} /></button></div></div></section>
+      <section className="writing-section"><div className="writing-illustration"><PenLine size={27} /><span>MF</span></div><div><p className="eyebrow"><span className="route-dot" /> {t.writingTitle}</p><h2>{isAr ? activeLesson.writingPromptAr : activeLesson.writingPromptFr}</h2><textarea value={writing} onChange={(event) => { props.onWriting(event.target.value); }} placeholder={t.writingPlaceholder} aria-label={t.writingTitle} /><div className="writing-bottom"><span>{lineSaved ? <><Check size={15} /> {t.saved}</> : `${writing.trim().split(/\s+/).filter(Boolean).length} mots`}</span><button disabled={!writing.trim()} onClick={props.onSaveLine}>{t.saveLine} <ArrowRight className={isAr ? "flip" : ""} size={16} /></button></div></div></section>
     </main>
   );
 }
